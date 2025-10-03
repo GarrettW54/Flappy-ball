@@ -139,25 +139,35 @@ const clouds = createClouds();
 /* --- Setup initial menu overlay --- */
 showMenu();
 
-/* --- Input --- */
+/* --- Input (Fixed for Mobile Tap) --- */
 function flap(){
   if(state === 'menu'){
     startGame();
     return;
   }
   if(state !== 'running') return;
+
   football.vy = FLAP;
   football.rotation = -0.8;
   football.flapTimer = 8;
 }
+
+// Keyboard
 window.addEventListener('keydown', (e)=> {
   if(e.code === 'Space' || e.key === ' ') {
     e.preventDefault();
     flap();
   }
 });
-canvas.addEventListener('mousedown', (e)=> { flap(); });
-canvas.addEventListener('touchstart', (e)=> { flap(); e.preventDefault(); }, {passive:false});
+
+// Universal pointer support (covers mouse + touch + pen)
+function onTap(e){
+  e.preventDefault();
+  flap();
+}
+
+window.addEventListener('pointerdown', onTap, {passive:false});
+
 
 /* --- Game functions --- */
 function resetState(){
@@ -530,3 +540,4 @@ function getRandom(min,max){ return Math.random()*(max-min)+min; }
 </script>
 </body>
 </html>
+
