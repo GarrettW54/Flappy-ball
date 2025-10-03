@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Flappy Football — Goal Post Run</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg-sky: #70c8ff;
+      --cloud: #ffffffcc;
+      --grass: #2e9f4a;
+      --post: #ffd400;
+      --post-shadow: #d1a700;
+      --score-color: #fff;
+      --ui-bg: rgba(0,0,0,0.35);
+    }
+    html,body{
+      height:100%;
+      margin:0;
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      background: linear-gradient(#87cefa, #bfeeff 60%);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    #game-wrap {
+      position:relative;
+      width: 420px;
+      max-width:100%;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      border-radius: 10px;
+      overflow: hidden;
+      background: linear-gradient(#70c8ff, #bfeeff 70%);
+    }
+    canvas { display:block; width:100%; height:auto; background: transparent; }
+    /* Score */
+    #score {
+      position:absolute;
+      top:14px;
+      left:50%;
+      transform:translateX(-50%);
+      z-index:6;
+      font-size:48px;
+      color:var(--score-color);
+      text-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+      pointer-events:none;
+      font-weight:700;
+      letter-spacing:3px;
+    }
+    /* Start / Game over overlay */
+    #overlay {
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      z-index:8;
+      pointer-events:none;
+    }
+    .card {
+      pointer-events:auto;
+      background: var(--ui-bg);
+      color:#fff;
+      padding:18px 22px;
+      border-radius:10px;
+      text-align:center;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    .btn {
+      display:inline-block;
+      margin-top:12px;
+      background: #fff;
+      color: #222;
+      padding:8px 14px;
+      border-radius:6px;
+      cursor:pointer;
+      font-weight:600;
+      border: none;
+    }
+    .hint {
+      font-size:14px;
+      opacity:0.9;
+      margin-top:8px;
+    }
+    /* small mobile-friendly layout */
+    @media (max-width:420px){
+      #score { font-size:36px; top:10px; }
+      .card { padding:12px 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="game-wrap" role="application" aria-label="Flappy Football Game">
+    <canvas id="game" width="420" height="640"></canvas>
+    <div id="score">0</div>
+    <div id="overlay"></div>
+  </div>
+
+<script>
+/* --- Game constants --- */
+const CANVAS_W = 420;
+const CANVAS_H = 640;
+const GRAVITY = 0.45;
+const FLAP = -8.5;
+const BALL_RADIUS = 22;
+const FPS = 60;
+const POST_WIDTH = 56;
+const GAP_HEIGHT = 160; // gap the football flies through
+const POST_SPEED = 2.6;
+const POST_SPAWN_X = CANVAS_W + 80;
+const POST_INTERVAL_MIN = 1400; // ms
+const POST_INTERVAL_MAX = 1900;
+const FIELD_HEIGHT = 110; // bottom grass area height
+
+/* --- Canvas setup --- */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = CANVAS_W;
+canvas.height = CANVAS_H;
+
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('score');
+
+/* --- Game state --- */
+let state = 'menu'; // 'menu', 'running', 'over'
+let football = {};
+let posts = [];
+let lastSpawn = 0;
+let spawnInterval = getRandom(POST_INTERVAL_MIN, POST_INTERVAL_MAX);
+let score = 0;
+let highScore = 0;
+let lastTime = 0;
+
+/* --- Visual helpers (clouds, background) --- */
+const clouds = createClouds();
+
+/* --- Setup initial menu overlay --- */
+showMenu();
+
+/* --- Input --- */
+function flap(){
+  if(state === 'menu'){
+    startGame();
+    return;
+  }
+  if(state !== 'running') return;
+  football.vy = FLAP;
+  football.rotation = -0.8;
+  football.flapTimer = 8;
+}
+window.addEventListener('keydown', (e)=> {
+  if(e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    flap();
+  }
+});
+canvas.addEventListener('mousedown', (e)=> { flap(); });
+canvas.addEventListener('touchstart', (e)=> { flap(); e.preventDefault(); }, {passive:false});
+
+/* --- Game functions --- */
+function resetState(){
+  football = {
+    x: CANVAS_W * 0.22,
+    y: CANVAS_H/2,
+    vy: 0,
+    rotation: 0,
+    flapTimer: 0
+  };
+  posts = [];
+  score = 0;
+  lastSpawn = performance.now();
+  spawnInterval = getRandom(POST_INTERVAL_MIN, POST_INTERVAL_MAX);
+}
+
+function startGame(){
+  resetState();
+  state = 'running';
+  overlay.innerHTML = '';
+  scoreEl.innerText = '0';
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+function endGame(){
+  state = 'over';
+  if(score > highScore) highScore = score;
+  showGameOver();
+}
+
+/* --- Spawning posts (goal posts) --- */
+function spawnPost(){
+  // top length range to ensure gap sits inside playable area above grass
+  const padTop = 40;
+  const padBottom = FIELD_HEIGHT + 40;
+  const maxTop = CANVAS_H - padBottom - GAP_HEIGHT;
+  const top = padTop + Math.random() * Math.max(0, maxTop - padTop);
+  const post = {
+    x: POST_SPAWN_X,
+    top: top,
+    passed: false
+  };
+  posts.push(post);
+}
+
+/* --- Collision detection between football and posts or bounds --- */
+function checkCollision(){
+  // ground/ceiling collision
+  if(football.y + BALL_RADIUS > CANVAS_H - FIELD_HEIGHT) return true;
+  if(football.y - BALL_RADIUS < 0) return true;
+
+  // check posts
+  const ballX = football.x;
+  for(const p of posts){
+    // posts occupy p.x .. p.x + POST_WIDTH
+    if(ballX + BALL_RADIUS > p.x && ballX - BALL_RADIUS < p.x + POST_WIDTH){
+      // is it in the gap?
+      if(football.y - BALL_RADIUS < p.top || football.y + BALL_RADIUS > p.top + GAP_HEIGHT){
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* --- Main loop --- */
+function loop(time){
+  const dt = Math.min(40, time - lastTime);
+  lastTime = time;
+
+  update(dt);
+  draw();
+
+  if(state === 'running') requestAnimationFrame(loop);
+}
+
+function update(dt){
+  // football physics
+  football.vy += GRAVITY * (dt/16.67);
+  football.y += football.vy * (dt/16.67);
+
+  // rotation easing
+  if(football.flapTimer > 0){
+    football.flapTimer -= (dt/16.67);
+  } else {
+    football.rotation += 0.03 * (dt/16.67);
+    if(football.rotation > 1.2) football.rotation = 1.2;
+  }
+
+  // move posts
+  for(const p of posts) p.x -= POST_SPEED * (dt/16.67);
+
+  // spawn posts
+  if(performance.now() - lastSpawn > spawnInterval){
+    spawnPost();
+    lastSpawn = performance.now();
+    spawnInterval = getRandom(POST_INTERVAL_MIN, POST_INTERVAL_MAX);
+  }
+
+  // remove old posts
+  if(posts.length && posts[0].x < -POST_WIDTH - 40) posts.shift();
+
+  // scoring
+  for(const p of posts){
+    if(!p.passed && p.x + POST_WIDTH < football.x){
+      score++;
+      p.passed = true;
+      // small pop effect or sound could be placed here
+      scoreEl.innerText = score;
+    }
+  }
+
+  // collision?
+  if(checkCollision()){
+    endGame();
+  }
+}
+
+/* --- Drawing --- */
+function draw(){
+  // clear
+  ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
+
+  // sky gradient
+  const g = ctx.createLinearGradient(0,0,0,CANVAS_H);
+  g.addColorStop(0, '#70c8ff');
+  g.addColorStop(0.6, '#bfeeff');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  // clouds
+  drawClouds();
+
+  // moving background lines / distant stadium hint (subtle)
+  drawBackgroundLines();
+
+  // posts (goal posts)
+  for(const p of posts) drawPost(p);
+
+  // grass field at bottom
+  drawField();
+
+  // football
+  drawFootball(football.x, football.y, football.rotation);
+
+  // small floating score when in menu
+  if(state === 'menu'){
+    // draw title
+    ctx.save();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 38px "Segoe UI", Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('FLAPPY FOOTBALL', CANVAS_W/2, CANVAS_H*0.22);
+    ctx.restore();
+  }
+}
+
+/* --- draw helpers --- */
+
+function drawPost(p){
+  const x = p.x;
+  const top = p.top;
+  const bottomTop = top + GAP_HEIGHT;
+
+  // left and right posts — draw as wide "posts" with crossbar
+  // Top post (above gap) — draw vertical posts and crossbar lower
+  // We'll render two vertical yellow posts separated by a crossbar at the gap top for the top and bottom parts
+  ctx.save();
+
+  // top solid wall
+  ctx.fillStyle = '#3a7f2a';
+  ctx.fillRect(x, 0, POST_WIDTH, top);
+
+  // bottom solid wall
+  ctx.fillRect(x, bottomTop, POST_WIDTH, CANVAS_H - bottomTop - FIELD_HEIGHT);
+
+  // convert those walls visually into "goal post openings":
+  // draw yellow goal posts overlay at the left and right edges of the wall gap to mimic tall posts you must pass through
+  const postThickness = 8;
+  const crossbarY = top + GAP_HEIGHT/2;
+
+  // left vertical post
+  ctx.fillStyle = '#ffd400';
+  ctx.fillRect(x + 6, top, postThickness, GAP_HEIGHT);
+
+  // right vertical post
+  ctx.fillRect(x + POST_WIDTH - 6 - postThickness, top, postThickness, GAP_HEIGHT);
+
+  // top crossbar spanning between vertical posts near the top of gap (visual cue)
+  ctx.fillRect(x + 6, top + 8, POST_WIDTH - 12, postThickness);
+
+  // bottom crossbar near bottom of gap (optional detail)
+  ctx.fillRect(x + 6, top + GAP_HEIGHT - 8 - postThickness, POST_WIDTH - 12, postThickness);
+
+  // subtle shadow on posts
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  ctx.fillRect(x + POST_WIDTH - 6 - postThickness - 2, top + 6, 2, GAP_HEIGHT - 12);
+
+  ctx.restore();
+
+  // add yard lines on the wall surfaces for football feel
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 2;
+  for(let y=12; y < top - 10; y+=28){
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y);
+    ctx.lineTo(x + POST_WIDTH - 8, y);
+    ctx.stroke();
+  }
+  for(let y = bottomTop + 12; y < CANVAS_H - FIELD_HEIGHT - 6; y+=28){
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y);
+    ctx.lineTo(x + POST_WIDTH - 8, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawField(){
+  // green grass
+  ctx.save();
+  ctx.fillStyle = '#2e9f4a';
+  ctx.fillRect(0, CANVAS_H - FIELD_HEIGHT, CANVAS_W, FIELD_HEIGHT);
+
+  // white yard markers
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 2;
+  for(let x=16; x < CANVAS_W; x += 34){
+    ctx.beginPath();
+    ctx.moveTo(x, CANVAS_H - FIELD_HEIGHT + 12);
+    ctx.lineTo(x, CANVAS_H - 12);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawFootball(x, y, rot){
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  // body
+  ctx.beginPath();
+  ctx.ellipse(0, 0, BALL_RADIUS, BALL_RADIUS * 0.62, 0, 0, Math.PI*2);
+  ctx.fillStyle = '#6f3b16';
+  ctx.fill();
+  // outline
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#2b1b0f';
+  ctx.stroke();
+
+  // white stripes and laces
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#fff';
+  // stripes
+  ctx.beginPath(); ctx.moveTo(-BALL_RADIUS*0.6, -BALL_RADIUS*0.28); ctx.lineTo(-BALL_RADIUS*0.35, -BALL_RADIUS*0.1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(BALL_RADIUS*0.6, BALL_RADIUS*0.28); ctx.lineTo(BALL_RADIUS*0.35, BALL_RADIUS*0.1); ctx.stroke();
+
+  // laces base
+  ctx.lineWidth = 2.8;
+  ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(8,0); ctx.stroke();
+  for(let i=-6;i<=6;i+=3){
+    ctx.beginPath(); ctx.moveTo(i, -4); ctx.lineTo(i, 4); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* --- Background small stuff --- */
+function drawBackgroundLines(){
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.fillStyle = '#000';
+  for(let i=0;i<6;i++){
+    const y = 40 + i*34;
+    ctx.fillRect(0, y, CANVAS_W, 2);
+  }
+  ctx.restore();
+}
+
+/* --- Clouds --- */
+function createClouds(){
+  const arr = [];
+  for(let i=0;i<6;i++){
+    arr.push({
+      x: Math.random() * CANVAS_W,
+      y: 40 + Math.random() * 120,
+      scale: 0.9 + Math.random() * 0.8,
+      speed: 0.2 + Math.random() * 0.45
+    });
+  }
+  return arr;
+}
+function drawClouds(){
+  for(const c of clouds){
+    c.x += c.speed * 0.4;
+    if(c.x > CANVAS_W + 120) c.x = -140;
+    drawCloud(c.x, c.y, c.scale);
+  }
+}
+function drawCloud(x, y, s){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.scale(s,s);
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  roundRect(ctx, -50, -15, 100, 32, 20, true, false);
+  roundRect(ctx, -70, -4, 44, 26, 18, true, false);
+  roundRect(ctx, 28, -6, 44, 26, 18, true, false);
+  ctx.restore();
+}
+/* tiny rounded rect helper */
+function roundRect(ctx,x,y,w,h,r,fill,stroke){
+  if(typeof r==='undefined') r=5;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+/* --- UI overlays --- */
+function showMenu(){
+  overlay.innerHTML = `
+    <div class="card" role="dialog" aria-label="Start menu">
+      <div style="font-size:20px;font-weight:700">FLAPPY FOOTBALL</div>
+      <div style="margin-top:10px">Fly the football through the goal posts</div>
+      <div style="margin-top:12px">
+        <button class="btn" id="startBtn">Tap to Start</button>
+      </div>
+      <div class="hint">Space or Tap to flap • Avoid hitting posts or ground</div>
+    </div>
+  `;
+  overlay.style.pointerEvents = 'auto';
+  document.getElementById('startBtn').onclick = () => startGame();
+  state = 'menu';
+}
+
+function showGameOver(){
+  overlay.innerHTML = `
+    <div class="card" role="dialog" aria-label="Game over">
+      <div style="font-size:22px;font-weight:800">Game Over</div>
+      <div style="margin-top:8px">Score: <strong>${score}</strong></div>
+      <div style="margin-top:6px">Best: <strong>${highScore}</strong></div>
+      <div style="margin-top:12px">
+        <button class="btn" id="restartBtn">Restart</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Space or Tap to flap</div>
+    </div>
+  `;
+  overlay.style.pointerEvents = 'auto';
+  document.getElementById('restartBtn').onclick = () => {
+    startGame();
+  };
+}
+
+/* --- Utilities --- */
+function getRandom(min,max){ return Math.random()*(max-min)+min; }
+
+/* --- kick off initial draw --- */
+(function init(){
+  resetState();
+  draw(); // initial frame
+})();
+
+</script>
+</body>
+</html>
