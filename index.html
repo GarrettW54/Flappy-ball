@@ -57,7 +57,7 @@ canvas{width:100%;height:auto;display:block;}
 <body>
 
 <div id="game-wrap">
-  <canvas id="game" width="420" height="640"></canvas>
+  <canvas id="game" width="420" height="640" tabindex="0"></canvas>
   <div id="score">0</div>
   <div id="overlay"></div>
 </div>
@@ -128,10 +128,9 @@ function pickTeam(color){
 }
 function showMenu(){
   overlay.innerHTML=`
-    <div class="card">
       <div style="font-size:24px;font-weight:700">FLAPPY FOOTBALL</div>
       <button class="btn" onclick="start()">Play</button>
-      <div style="margin-top:10px;font-size:14px">Tap/Space to flap</div>
+      <div style="margin-top:10px;font-size:14px">Tap/Space/ArrowUp to flap</div>
     </div>`;
   state="menu";
 }
@@ -157,15 +156,27 @@ function start(){
   loop();
 }
 
-/* INPUT */
+/* INPUT (rewritten for robust tap detection) */
 function flap(){
   if(state!=="run")return;
   fb.vy=FLAP; fb.rot=-.8;
   audio.flap.play();
 }
-window.addEventListener("keydown",e=>{if(e.code==="Space"){e.preventDefault();flap();}});
-c.addEventListener("mousedown",flap);
-c.addEventListener("touchstart",e=>{e.preventDefault();flap()},{passive:false});
+// Keyboard support: Space, ArrowUp
+window.addEventListener("keydown",e=>{
+  if(state!=="run")return;
+  if(e.code==="Space"||e.code==="ArrowUp"){e.preventDefault();flap();}
+});
+// Mouse click on canvas
+c.addEventListener("mousedown",()=>{
+  if(state==="run")flap();
+});
+// Touch support
+c.addEventListener("touchstart",e=>{
+  e.preventDefault();
+  if(state==="run")flap();
+  c.focus && c.focus();
+},{passive:false});
 
 /* SPAWN POSTS */
 function spawn(){
@@ -207,7 +218,7 @@ function hit(){
   }
 }
 
-/* DRAW */
+/* DRAW (rewritten crowd section) */
 function draw(){
   ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
 
@@ -216,14 +227,30 @@ function draw(){
   g.addColorStop(0,"#70c8ff"); g.addColorStop(.6,"#bfeeff");
   ctx.fillStyle=g; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
 
-  /* stadium stands */
+  /* stadium stands background */
   const st=150,sb=CANVAS_H-FIELD-30;
-  let crowd=ctx.createLinearGradient(0,st,0,sb);
-  crowd.addColorStop(0,"#111");crowd.addColorStop(1,"#333");
-  ctx.fillStyle=crowd;ctx.fillRect(0,st,CANVAS_W,sb-st);
+  let crowdBg=ctx.createLinearGradient(0,st,0,sb);
+  crowdBg.addColorStop(0,"#111");crowdBg.addColorStop(1,"#333");
+  ctx.fillStyle=crowdBg;
+  ctx.fillRect(0,st,CANVAS_W,sb-st);
 
+  // Animated crowd: colored circles (heads), some team colors, some white
+  let time = Date.now()/500;
+  for(let i=0;i<100;i++){
+    let x=(i%20)*21 + 10 + Math.sin(time+i)*2; // more regular spacing
+    let y=st+20+((i/20|0)*20) + Math.cos(time*1.5+i)*2;
+    let r=5+Math.random()*2;
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = i%5===0 ? selectedColor : "#fff";
+    ctx.globalAlpha = 0.8 + 0.2*Math.sin(time+i); // subtle wave effect
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Random extra sparkles over crowd for energy
   ctx.fillStyle="rgba(255,255,255,.12)";
-  for(let i=0;i<160;i++){
+  for(let i=0;i<40;i++){
     ctx.fillRect(Math.random()*CANVAS_W, st+Math.random()*(sb-st),2,2);
   }
 
